@@ -3,7 +3,7 @@ import os
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 import numpy as np
 import torch
-#import matplotlib.pyplot as plt
+import json
 from PIL import Image
 
 # select the device for computation
@@ -33,7 +33,7 @@ from sam2.sam2_image_predictor import SAM2ImagePredictor
 from sam2.build_sam import build_sam2
 
 
-sam2_checkpoint = "../checkpoints/sam2.1_hiera_large.pt"
+sam2_checkpoint = "../sam2/checkpoints/sam2.1_hiera_large.pt"
 model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
 
 sam2_model = build_sam2(model_cfg, sam2_checkpoint, device=device)
@@ -41,46 +41,53 @@ sam2_model = build_sam2(model_cfg, sam2_checkpoint, device=device)
 predictor = SAM2ImagePredictor(sam2_model)
 
 def apply_mask(image ,mask, random_color=False, borders = True):
-    if random_color:
-        color = np.concatenate([np.random.random(3), np.array([0.6])], axis=0)
-    else:
-        color = np.array([255, 255, 0, 255])
+    Background_color = np.array([255, 255, 255])
+
     h, w = mask.shape[-2:]
     mask = mask.astype(np.uint8)
-    print("mask shape",mask.shape)
-    #mask_image =  mask.reshape(h, w, 1) * color.reshape(1, 1, -1)
+    mask = mask.reshape(h, w)
 
-    mask_image = np.zeros((h,w,4),dtype=np.uint8)
-    mask_image[mask.reshape(h, w) == 1] =color
-   # if borders:
-   #     import cv2
-   #     contours, _ = cv2.findContours(mask,cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-   #     # Try to smooth contours
-   #     contours = [cv2.approxPolyDP(contour, epsilon=0.01, closed=True) for contour in contours]
-   #     mask_image = cv2.drawContours(mask_image, contours, -1, (1, 1, 1, 0.5), thickness=2)
-   #     cv2.imshow('Image Window', mask_image)
-    test = Image.fromarray(mask_image)
-    test.save("geeks.png")
-    return mask_image
+    masked_image_array = image.copy()
+    masked_image_array[mask == 0] = Background_color
 
-def gen_mask(image,points):
-    predictor.set_image(image)
+    # masked_image.save("geeks.png")
+    return masked_image_array
 
-    input_point = np.array([[500, 375]])
-    input_label = np.array([1])
+def points_from_json(points_json : str ,img_height,img_width):
+    points = []
+    labels = []
 
-    masks, scores, logits = predictor.predict(
-        point_coords=input_point,
-        point_labels=input_label,
-        multimask_output=True,
-    )
-    return masks[0]
+    point_label_pairs = json.loads(points_json)
 
-def make_masked_img(image,points):
+    for point_label_pair in point_label_pairs:
+        points.append([int(img_width * point_label_pair['x']),int(img_height * point_label_pair['y'])]) # transforms the points from presentges to in image coordinates
+        labels.append(1 if point_label_pair['type'] == "include" else 0)
+    return np.array(points), np.array(labels)
+
+def make_masked_img(image, json_points):
     image = Image.open(image)
     image = np.array(image.convert("RGB"))
 
-    mask_points = gen_mask(image,points)
-    new_image   = apply_mask(image,mask_points)
+    predictor.set_image(image)
 
-    return new_image
+    img_height = image.shape[0]
+    img_width = image.shape[1]
+
+    print(f"image width:{img_width} , height:{img_height}")
+    print("making mask")
+
+    input_points, input_labels = points_from_json(json_points, img_height, img_width)
+    masks, scores, logits = predictor.predict(
+        point_coords=input_points,
+        point_labels=input_labels,
+        multimask_output=True,
+    )
+
+    masked_image_array = apply_mask(image,masks[0])
+    print(masked_image_array.shape)
+
+    #for testing put green pixel on slected point
+    #for point in input_points:
+    #    masked_image_array[point[1]][point[0]] = np.array([0, 255, 0])
+
+    return Image.fromarray(masked_image_array)
